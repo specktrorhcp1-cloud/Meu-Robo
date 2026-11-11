@@ -7,6 +7,10 @@ import numpy as np
 import requests
 import warnings
 import time
+import os
+import threading
+import socket
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
 warnings.filterwarnings('ignore')
 
@@ -19,6 +23,37 @@ exchange = ccxt.okx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}
 TAXA_CORRETORA_PCT = 0.10
 RISCO_ALVO_USD = 10.00     # Risco fixado em USD (ajustável pelo usuário)
 
+# --- SERVER WEB INTEGRADO (GAMBIARRA PARA SE PASSAR POR WEB SERVICE NO RENDER) ---
+class WebServiceHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write("🟢 OKX Signal Bot está ativo e operando em segundo plano!".encode("utf-8"))
+
+    def log_message(self, format, *args):
+        # Silencia logs de requisições HTTP para não poluir o terminal de produção
+        return
+
+class ReusableHTTPServer(HTTPServer):
+    def server_bind(self):
+        # Força o reuso imediato do socket no nível do sistema operacional antes de realizar o bind
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        super().server_bind()
+
+def iniciar_servidor_web():
+    # Lê a porta que o Render exige ou assume 10000 como padrão
+    porta = int(os.environ.get("PORT", 10000))
+    try:
+        server = ReusableHTTPServer(("0.0.0.0", porta), WebServiceHandler)
+        print(f"🌐 Servidor Web ativo fingindo ser Web Service na porta {porta}...")
+        server.serve_forever()
+    except OSError as e:
+        print(f"⚠️ Porta {porta} já está em uso (comum em testes locais). Continuando execução principal sem travar o bot de sinais... Erro: {e}")
+    except Exception as e:
+        print(f"⚠️ Erro inesperado ao subir o servidor HTTP: {e}")
+
+# --- FUNÇÕES CORE DO SINAL BOT ---
 def enviar_mensagem_telegram(mensagem):
     """Envia os alertas de entrada diretamente para o seu bot do Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -188,3 +223,11 @@ def rodar_servico_24h():
         except Exception as e:
             print(f"⚠️ Erro no loop: {e}")
             time.sleep(30)
+
+if __name__ == '__main__':
+    # Inicia o servidor Web falso em uma thread paralela
+    thread_web = threading.Thread(target=iniciar_servidor_web, daemon=True)
+    thread_web.start()
+
+    # Inicia o Loop de Monitoramento principal do Bot na thread primária
+    rodar_servico_24h()

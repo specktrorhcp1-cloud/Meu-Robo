@@ -21,7 +21,7 @@ TELEGRAM_CHAT_ID = "6719799176"
 # Inicializa a OKX forçando o modo Swap (Futuros Perpétuos)
 exchange = ccxt.okx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 TAXA_CORRETORA_PCT = 0.10
-RISCO_ALVO_USD = 10.00     # Risco fixado em USD (ajustável pelo usuário)
+RISCO_ALVO_USD = 10.00     # Risco fixado em USD
 
 # --- SERVER WEB INTEGRADO (GAMBIARRA PARA SE PASSAR POR WEB SERVICE NO RENDER) ---
 class WebServiceHandler(BaseHTTPRequestHandler):
@@ -37,12 +37,11 @@ class WebServiceHandler(BaseHTTPRequestHandler):
 
 class ReusableHTTPServer(HTTPServer):
     def server_bind(self):
-        # Força o reuso imediato do socket no nível do sistema operacional antes de realizar o bind
+        # Força o reuso imediato do socket no nível do sistema operacional antes do bind
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         super().server_bind()
 
 def iniciar_servidor_web():
-    # Lê a porta que o Render exige ou assume 10000 como padrão
     porta = int(os.environ.get("PORT", 10000))
     try:
         server = ReusableHTTPServer(("0.0.0.0", porta), WebServiceHandler)
@@ -184,18 +183,36 @@ def verificar_sinal_tempo_real(ativo):
         else:
             return
 
-        risco_pct = abs(entry - stop_loss) / entry * 100
-        if risco_pct <= 0:
+        # Cálculos de distâncias e percentuais
+        dist_stop_pct = (abs(entry - stop_loss) / entry) * 100
+        dist_target_pct = (abs(take_profit - entry) / entry) * 100
+
+        if dist_stop_pct <= 0:
             return
-        margem_necessaria = RISCO_ALVO_USD / (risco_pct / 100)
+        margem_necessaria = RISCO_ALVO_USD / (dist_stop_pct / 100)
+
+        # --- ANÁLISE DINÂMICA DE FATORES EXTREMOS (DADOS DE ELITE DO BACKTEST) ---
+        # Condição 1: Aumento de Open Interest institucional massivo (> 4.0% de fluxo em 15m)
+        fluxo_institucional_forte = (oi_change >= 4.0)
+        # Condição 2: Volatilidade forte e limpa de ignição (> 3.0% de amplitude de mercado)
+        volatilidade_elite = (amplitude_pct >= 3.0)
+        # Condição 3: Exaustão severa de preço (RSI nas pontas extremas de exaustão)
+        rsi_extremo = (rsi_val <= 28 or rsi_val >= 72)
+
+        status_prioridade = ""
+        # Se o sinal se encaixar no padrão de maior lucro histórico, ganha a tag VIP
+        if fluxo_institucional_forte and volatilidade_elite and rsi_extremo:
+            status_prioridade = "🔥⚡ *[ALERTA DE PRIORIDADE MÁXIMA - PADRÃO INSTITUCIONAL DE ELITE]* *⚡🔥\n"
+            status_prioridade += "ℹ️ _Este sinal possui uma confluência perfeita de volume institucional e volatilidade de alta probabilidade_\n\n"
 
         mensagem = (
+            f"{status_prioridade}"
             f"🚨 *SINAL DETECTADO NA OKX* 🚨\n\n"
             f"🪙 Ativo: `{ativo}`\n"
             f"📊 Tipo: {tipo}\n"
             f"💵 Entrada Sugerida: ${entry:.4f}\n"
-            f"🎯 Alvo (Take Profit): ${take_profit:.4f}\n"
-            f"🛑 Stop Loss: ${stop_loss:.4f}\n"
+            f"🎯 Alvo (Take Profit): ${take_profit:.4f} *(+{dist_target_pct:.2f}%)*\n"
+            f"🛑 Stop Loss: ${stop_loss:.4f} *(-{dist_stop_pct:.2f}%)*\n"
             f"🛡️ Margem Alocada Recomendada: ${margem_necessaria:.2f}\n"
             f"⏰ Hora de análise: {datetime.now().strftime('%H:%M:%S')}\n"
         )

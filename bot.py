@@ -1,8 +1,6 @@
 # ==============================================================================
 # SISTEMA DE ALTA ASSERTIVIDADE OKX (GATILHOS LIMPOS + TELEGRAM BOT EM PRODUÇÃO)
 # ==============================================================================
-!pip install ccxt -q
-
 import ccxt
 import pandas as pd
 import numpy as np
@@ -152,17 +150,18 @@ def verificar_sinal_tempo_real(ativo):
             return
 
         risco_pct = abs(entry - stop_loss) / entry * 100
-        if risco_pct <= 0: return
+        if risco_pct <= 0:
+            return
         margem_necessaria = RISCO_ALVO_USD / (risco_pct / 100)
 
-        mensagem = ( 
-            f"🚨 *SINAL DETECTADO NA OKX* 🚨\n\n" 
-            f"🪙 Ativo: `{ativo}`\n" 
-            f"📊 Tipo: {tipo}\n" 
-            f"💵 Entrada Sugerida: ${entry:.4f}\n" 
-            f"🎯 Alvo (Take Profit): ${take_profit:.4f}\n" 
-            f"🛑 Stop Loss: ${stop_loss:.4f}\n" 
-            f"🛡️ Margem Alocada Recomendada: ${margem_necessaria:.2f}\n" 
+        mensagem = (
+            f"🚨 *SINAL DETECTADO NA OKX* 🚨\n\n"
+            f"🪙 Ativo: `{ativo}`\n"
+            f"📊 Tipo: {tipo}\n"
+            f"💵 Entrada Sugerida: ${entry:.4f}\n"
+            f"🎯 Alvo (Take Profit): ${take_profit:.4f}\n"
+            f"🛑 Stop Loss: ${stop_loss:.4f}\n"
+            f"🛡️ Margem Alocada Recomendada: ${margem_necessaria:.2f}\n"
             f"⏰ Hora de análise: {datetime.now().strftime('%H:%M:%S')}\n"
         )
         print(f"🔥 SINAL ENCONTRADO PARA {ativo}! Enviando Telegram...")

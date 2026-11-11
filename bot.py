@@ -1,5 +1,5 @@
 # ==============================================================================
-# SISTEMA DE ALTA ASSERTIVIDADE OKX (PRODUÇÃO 24/7 - BLINDADO E ATUALIZADO)
+# ROBÔ DE SINAIS OKX - TOP 100 / VOL + OI 2.5% + RSI + GESTÃO DE RISCO (24/7)
 # ==============================================================================
 import ccxt
 import pandas as pd
@@ -22,6 +22,10 @@ TELEGRAM_CHAT_ID = "6719799176"
 exchange = ccxt.okx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 TAXA_CORRETORA_PCT = 0.10
 RISCO_ALVO_USD = 10.00  # Risco fixado em USD
+
+# Dicionário global para controle de Cooldown por ativo (1 hora)
+ultimo_alerta = {}
+COOLDOWN_SEGUNDOS = 3600
 
 # --- SERVER WEB INTEGRADO (PARA O RENDER NÃO DERRUBAR O WORKER) ---
 class WebServiceHandler(BaseHTTPRequestHandler):
@@ -142,6 +146,12 @@ def processar_dados_ativo(ativo):
 
 def verificar_sinal_tempo_real(ativo):
     try:
+        # --- TRAVA DE COOLDOWN (1 HORA) ---
+        global ultimo_alerta
+        tempo_atual = time.time()
+        if ativo in ultimo_alerta and (tempo_atual - ultimo_alerta[ativo]) < COOLDOWN_SEGUNDOS:
+            return
+
         df = processar_dados_ativo(ativo)
         if df is None or len(df) < 10:
             return
@@ -167,25 +177,36 @@ def verificar_sinal_tempo_real(ativo):
 
         diff = swing_high - swing_low
 
+        # --- ESTRUTURA REAL DE TOPO/FUNDO E FIBONACCI ---
         if price_change < 0 and rsi_val <= 35:
-            entry = swing_high - 0.50 * diff
-            take_profit = swing_high + (0.05 * diff)
+            # LONG: Entra na retração, Take Profit cravado no TOPO e Stop Loss ABAIXO do fundo
+            entry = swing_high - (0.50 * diff)
+            take_profit = swing_high
             stop_loss = swing_low - (0.80 * atr_val)
             tipo = "🟢 LONG (COMPRA)"
         elif price_change > 0 and rsi_val >= 65:
-            entry = swing_low + 0.50 * diff
-            take_profit = swing_low - (0.05 * diff)
+            # SHORT: Entra na retração, Take Profit cravado no FUNDO e Stop Loss ACIMA do topo
+            entry = swing_low + (0.50 * diff)
+            take_profit = swing_low
             stop_loss = swing_high + (0.80 * atr_val)
             tipo = "🔴 SHORT (VENDA)"
         else:
             return
 
+        # --- CÁLCULOS DE RISCO E PERCENTUAIS ---
         dist_stop_pct = (abs(entry - stop_loss) / entry) * 100
         dist_target_pct = (abs(take_profit - entry) / entry) * 100
 
         if dist_stop_pct <= 0:
             return
-        margem_necessaria = RISCO_ALVO_USD / (dist_stop_pct / 100)
+            
+        tamanho_posicao_usd = RISCO_ALVO_USD / (dist_stop_pct / 100)
+        alavancagem_sugerida = tamanho_posicao_usd / 50.0  # Baseado em $50 de margem alocada
+        if alavancagem_sugerida < 1: 
+            alavancagem_sugerida = 1.0
+
+        # Registra o cooldown do ativo
+        ultimo_alerta[ativo] = tempo_atual
 
         fluxo_institucional_forte = (oi_change >= 4.0)
         volatilidade_elite = (amplitude_pct >= 3.0)
@@ -201,9 +222,10 @@ def verificar_sinal_tempo_real(ativo):
             f"🪙 Ativo: {ativo}\n"
             f"📊 Tipo: {tipo}\n"
             f"💵 Entrada: {entry:.4f}\n"
-            f"🎯 Alvo: {take_profit:.4f} (+{dist_target_pct:.2f}%)\n"
-            f"🛑 Stop Loss: {stop_loss:.4f}\n"
-            f"💰 Margem (Risco $10): US$ {margem_necessaria:.2f}\n"
+            f"🎯 Alvo (Topo/Fundo): {take_profit:.4f} (+{dist_target_pct:.2f}%)\n"
+            f"🛑 Stop Loss (Estrutural): {stop_loss:.4f} (-{dist_stop_pct:.2f}%)\n"
+            f"💰 Tamanho da Posição: US$ {tamanho_posicao_usd:.2f}\n"
+            f"⚙️ Alavancagem Sugerida: ~{alavancagem_sugerida:.1f}x (Risco fixo: $10)\n"
             f"⏰ Hora: {datetime.now().strftime('%H:%M:%S')}"
         )
         print(f"🔥 SINAL ENCONTRADO PARA {ativo}! Enviando Telegram...")

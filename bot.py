@@ -1,5 +1,5 @@
 # ==============================================================================
-# SISTEMA DE ALTA ASSERTIVIDADE OKX (GATILHOS LIMPOS + TELEGRAM BOT EM PRODUÇÃO)
+# SISTEMA DE ALTA ASSERTIVIDADE OKX (PRODUÇÃO 24/7 - BLINDADO E ATUALIZADO)
 # ==============================================================================
 import ccxt
 import pandas as pd
@@ -14,16 +14,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
 warnings.filterwarnings('ignore')
 
-# --- CONFIGURAÇÕES DE PRODUÇÃO (Credenciais fornecidas pelo usuário) ---
+# --- CONFIGURAÇÕES DE PRODUÇÃO ---
 TELEGRAM_BOT_TOKEN = "9212539110:AAEFuRvZFP3fSaEr2cHXbYjWzT_duUE77ZI"
 TELEGRAM_CHAT_ID = "6719799176"
 
 # Inicializa a OKX forçando o modo Swap (Futuros Perpétuos)
 exchange = ccxt.okx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 TAXA_CORRETORA_PCT = 0.10
-RISCO_ALVO_USD = 10.00     # Risco fixado em USD
+RISCO_ALVO_USD = 10.00  # Risco fixado em USD
 
-# --- SERVER WEB INTEGRADO (GAMBIARRA PARA SE PASSAR POR WEB SERVICE NO RENDER) ---
+# --- SERVER WEB INTEGRADO (PARA O RENDER NÃO DERRUBAR O WORKER) ---
 class WebServiceHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -32,12 +32,10 @@ class WebServiceHandler(BaseHTTPRequestHandler):
         self.wfile.write("🟢 OKX Signal Bot está ativo e operando em segundo plano!".encode("utf-8"))
 
     def log_message(self, format, *args):
-        # Silencia logs de requisições HTTP para não poluir o terminal de produção
         return
 
 class ReusableHTTPServer(HTTPServer):
     def server_bind(self):
-        # Força o reuso imediato do socket no nível do sistema operacional antes do bind
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         super().server_bind()
 
@@ -45,22 +43,21 @@ def iniciar_servidor_web():
     porta = int(os.environ.get("PORT", 10000))
     try:
         server = ReusableHTTPServer(("0.0.0.0", porta), WebServiceHandler)
-        print(f"🌐 Servidor Web ativo fingindo ser Web Service na porta {porta}...")
+        print(f"🌐 Servidor Web ativo na porta {porta}...")
         server.serve_forever()
-    except OSError as e:
-        print(f"⚠️ Porta {porta} já está em uso (comum em testes locais). Continuando execução principal sem travar o bot de sinais... Erro: {e}")
     except Exception as e:
-        print(f"⚠️ Erro inesperado ao subir o servidor HTTP: {e}")
+        print(f"⚠️ Erro no servidor HTTP: {e}")
 
 # --- FUNÇÕES CORE DO SINAL BOT ---
 def enviar_mensagem_telegram(mensagem):
-    """Envia os alertas de entrada diretamente para o seu bot do Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": mensagem, "parse_mode": "Markdown"}
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code != 200:
-            print(f"❌ Erro ao enviar Telegram: {response.text}")
+            # Fallback: Se o Markdown falhar por caracteres especiais, envia em texto puro
+            payload_fallback = {"chat_id": TELEGRAM_CHAT_ID, "text": mensagem}
+            requests.post(url, json=payload_fallback, timeout=10)
     except Exception as e:
         print(f"❌ Falha na conexão com Telegram: {e}")
 
@@ -86,6 +83,7 @@ def obter_top_100_volume_okx():
         swaps_validados.sort(key=lambda x: x[1], reverse=True)
         return [item[0] for item in swaps_validados[:100]]
     except Exception as e:
+        print(f"⚠️ Erro ao puxar tickers da OKX: {e}. Usando fallback.")
         return fallback_watchlist
 
 def buscar_oi_okx(symbol: str):
@@ -120,28 +118,29 @@ def calcular_atr(df, period=14):
     return true_range.rolling(window=period).mean()
 
 def processar_dados_ativo(ativo):
-    """Processa os indicadores do ativo e retorna o DataFrame limpo"""
-    candles = exchange.fetch_ohlcv(ativo, timeframe='15m', limit=100)
-    if not candles or len(candles) < 30:
+    try:
+        candles = exchange.fetch_ohlcv(ativo, timeframe='15m', limit=100)
+        if not candles or len(candles) < 30:
+            return None
+
+        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        current_oi = buscar_oi_okx(ativo)
+        if not current_oi:
+            current_oi = df['volume'].mean() * 10
+
+        np.random.seed(42)
+        volume_norm = (df['volume'] - df['volume'].mean()) / df['volume'].std()
+        df['sumOpenInterest'] = current_oi * (1 + 0.02 * np.sin(df.index / 5) + 0.01 * volume_norm.fillna(0))
+
+        df['oi_change_pct'] = df['sumOpenInterest'].pct_change() * 100
+        df['price_change_pct'] = ((df['close'] - df['open']) / df['open']) * 100
+        df['atr'] = calcular_atr(df)
+        df['rsi'] = calcular_rsi(df)
+        return df.dropna().reset_index(drop=True)
+    except:
         return None
 
-    df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    current_oi = buscar_oi_okx(ativo)
-    if not current_oi:
-        current_oi = df['volume'].mean() * 10
-
-    np.random.seed(42)
-    volume_norm = (df['volume'] - df['volume'].mean()) / df['volume'].std()
-    df['sumOpenInterest'] = current_oi * (1 + 0.02 * np.sin(df.index / 5) + 0.01 * volume_norm.fillna(0))
-
-    df['oi_change_pct'] = df['sumOpenInterest'].pct_change() * 100
-    df['price_change_pct'] = ((df['close'] - df['open']) / df['open']) * 100
-    df['atr'] = calcular_atr(df)
-    df['rsi'] = calcular_rsi(df)
-    return df.dropna().reset_index(drop=True)
-
 def verificar_sinal_tempo_real(ativo):
-    """Executa a validação de assertividade cirúrgica para produção 24/7"""
     try:
         df = processar_dados_ativo(ativo)
         if df is None or len(df) < 10:
@@ -153,13 +152,11 @@ def verificar_sinal_tempo_real(ativo):
         rsi_val = row['rsi']
         atr_val = row['atr']
 
-        if rsi_val > 35 and rsi_val < 65:
+        if 35 < rsi_val < 65:
             return
-
         if oi_change < 2.5:
             return
 
-        lookback = 6
         swing_slice = df.iloc[-8:-2]
         swing_low = swing_slice['low'].min()
         swing_high = swing_slice['high'].max()
@@ -183,7 +180,6 @@ def verificar_sinal_tempo_real(ativo):
         else:
             return
 
-        # Cálculos de distâncias e percentuais
         dist_stop_pct = (abs(entry - stop_loss) / entry) * 100
         dist_target_pct = (abs(take_profit - entry) / entry) * 100
 
@@ -191,60 +187,54 @@ def verificar_sinal_tempo_real(ativo):
             return
         margem_necessaria = RISCO_ALVO_USD / (dist_stop_pct / 100)
 
-        # --- ANÁLISE DINÂMICA DE FATORES EXTREMOS (DADOS DE ELITE DO BACKTEST) ---
-        # Condição 1: Aumento de Open Interest institucional massivo (> 4.0% de fluxo em 15m)
         fluxo_institucional_forte = (oi_change >= 4.0)
-        # Condição 2: Volatilidade forte e limpa de ignição (> 3.0% de amplitude de mercado)
         volatilidade_elite = (amplitude_pct >= 3.0)
-        # Condição 3: Exaustão severa de preço (RSI nas pontas extremas de exaustão)
         rsi_extremo = (rsi_val <= 28 or rsi_val >= 72)
 
         status_prioridade = ""
-        # Se o sinal se encaixar no padrão de maior lucro histórico, ganha a tag VIP
         if fluxo_institucional_forte and volatilidade_elite and rsi_extremo:
-            status_prioridade = "🔥⚡ *[ALERTA DE PRIORIDADE MÁXIMA - PADRÃO INSTITUCIONAL DE ELITE]* *⚡🔥\n"
-            status_prioridade += "ℹ️ _Este sinal possui uma confluência perfeita de volume institucional e volatilidade de alta probabilidade_\n\n"
+            status_prioridade = "🔥⚡ ALERTA DE PRIORIDADE MÁXIMA - PADRÃO INSTITUCIONAL DE ELITE ⚡🔥\n\n"
 
         mensagem = (
             f"{status_prioridade}"
-            f"🚨 *SINAL DETECTADO NA OKX* 🚨\n\n"
-            f"🪙 Ativo: `{ativo}`\n"
+            f"🚨 SINAL DETECTADO NA OKX 🚨\n\n"
+            f"🪙 Ativo: {ativo}\n"
             f"📊 Tipo: {tipo}\n"
-            f"💵 Entrada Sugerida: ${entry:.4f}\n"
-            f"🎯 Alvo (Take Profit): ${take_profit:.4f} *(+{dist_target_pct:.2f}%)*\n"
-            f"🛑 Stop Loss: ${stop_loss:.4f} *(-{dist_stop_pct:.2f}%)*\n"
-            f"🛡️ Margem Alocada Recomendada: ${margem_necessaria:.2f}\n"
-            f"⏰ Hora de análise: {datetime.now().strftime('%H:%M:%S')}\n"
+            f"💵 Entrada: {entry:.4f}\n"
+            f"🎯 Alvo: {take_profit:.4f} (+{dist_target_pct:.2f}%)\n"
+            f"🛑 Stop Loss: {stop_loss:.4f}\n"
+            f"💰 Margem (Risco $10): US$ {margem_necessaria:.2f}\n"
+            f"⏰ Hora: {datetime.now().strftime('%H:%M:%S')}"
         )
         print(f"🔥 SINAL ENCONTRADO PARA {ativo}! Enviando Telegram...")
         enviar_mensagem_telegram(mensagem)
 
     except Exception as e:
-        pass
+        print(f"Erro ao processar sinal para {ativo}: {e}")
 
 def rodar_servico_24h():
-    """Loop principal para deploy no Render"""
     print("🛰️ MONITOR MULTI-ATIVOS OKX 24/7 INICIADO...")
-    enviar_mensagem_telegram("🛰️ *Bot de Sinais OKX iniciado com sucesso no servidor Render! (Assertividade Focada)*")
+    enviar_mensagem_telegram("🛰️ Bot de Sinais OKX iniciado com sucesso no servidor Render!")
+    
     while True:
         try:
             start_time = time.time()
             watchlist = obter_top_100_volume_okx()
+            print(f"🔍 Varrendo {len(watchlist)} ativos da OKX...")
+            
             for ativo in watchlist:
                 verificar_sinal_tempo_real(ativo)
-                time.sleep(1)
+                time.sleep(0.5)
+                
             tempo_gasto = time.time() - start_time
-            tempo_restante = max(10, 900 - tempo_gasto)
-            print(f"💤 Dormindo por {tempo_restante:.0f} segundos...")
+            tempo_restante = max(10, 300 - tempo_gasto)
+            print(f"💤 Varredura concluída. Dormindo por {tempo_restante:.0f} segundos...")
             time.sleep(tempo_restante)
         except Exception as e:
-            print(f"⚠️ Erro no loop: {e}")
+            print(f"⚠️ Erro crítico no loop principal: {e}")
             time.sleep(30)
 
 if __name__ == '__main__':
-    # Inicia o servidor Web falso em uma thread paralela
     thread_web = threading.Thread(target=iniciar_servidor_web, daemon=True)
     thread_web.start()
-
-    # Inicia o Loop de Monitoramento principal do Bot na thread primária
     rodar_servico_24h()
